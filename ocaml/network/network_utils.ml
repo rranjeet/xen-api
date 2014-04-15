@@ -33,6 +33,7 @@ let modprobe = "/sbin/modprobe"
 let ethtool = "/sbin/ethtool"
 let bonding_dir = "/proc/net/bonding/"
 let dhcp6c = "/sbin/dhcp6c"
+let contrail_vrctl = "/opt/contrail/bin/vrouter-ctl"
 
 let call_script ?(log_successful_output=false) script args =
 	try
@@ -755,6 +756,69 @@ module Ovs = struct
 				) ports)
 		in
 		List.iter (fun flow -> ignore (ofctl ~log:true ["add-flow"; bridge; flow])) flows
+end
+
+module ContrailVR = struct
+
+	module Cli = struct
+	let vrctl ?(log=false) args =
+		call_script ~log_successful_output:log contrail_vrctl args
+
+	module type Cli_S = module type of Cli
+
+	module Make(Cli : Cli_S) = struct
+	include Cli
+
+	let create_bridge ?mac ?external_id name =
+		let mac_arg = match mac with
+			| None -> []
+			| Some mac ->
+				if vlan = None then
+					["--"; "set"; "bridge"; name; Printf.sprintf "other-config:hwaddr=\"%s\"" (String.escaped mac)]
+				else
+					["--"; "set"; "interface"; name; Printf.sprintf "MAC=\"%s\"" (String.escaped mac)]
+		in
+		let external_id_arg = match external_id with
+			| None -> []
+			| Some (key, value) ->
+				match vlan with
+				| None -> ["--"; "br-set-external-id"; name; key; value]
+				| Some (parent, _) -> ["--"; "br-set-external-id"; parent; key; value]
+		in
+		let vif_arg =
+			let existing_vifs = List.filter (fun iface -> not (Sysfs.is_physical iface)) (bridge_to_interfaces name) in
+			List.flatten (List.map (fun vif -> ["--"; "--may-exist"; "add-port"; name; vif]) existing_vifs)
+		in
+		vrctl ~log:true (["--"; "--may-exist"; "add-br"; name] @ mac_arg external_id_arg @ vif_arg)
+
+	let destroy_bridge name =
+		vrctl ~log:true ["--"; "--if-exists"; "del-br"; name]
+
+	let list_bridges () =
+		let bridges = String.rtrim (vrctl ["list-br"]) in
+		if bridges <> "" then
+			String.split '\n' bridges
+		else
+			[]
+	let bridge_to_interfaces name =
+		try
+			let ifaces = String.rtrim (vrctl ["list-ifaces"; name]) in
+			if ifaces <> "" then
+				String.split '\n' ifaces
+			else
+				[]
+		with _ -> []
+
+	let create_port name bridge =
+		vrctl ~log:true ["--"; "--may-exist"; "add-port"; bridge; name]
+
+	let destroy_port name =
+		vrctl ~log:true ["--"; "--with-iface"; "--if-exists"; "del-port"; name]
+
+	let port_to_bridge name =
+		vrctl ~log:true ["port-to-br"; name]
+        end
+	include Make(Cli)
 end
 
 module Brctl = struct

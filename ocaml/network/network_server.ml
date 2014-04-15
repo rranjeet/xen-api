@@ -391,6 +391,7 @@ module Bridge = struct
 		match backend with
 		| "openvswitch" | "vswitch" -> kind := Openvswitch
 		| "bridge" -> kind := Bridge
+		| "contrailvrouter" -> kind := Contrailvrouter 
 		| backend ->
 			let error = Printf.sprintf "ERROR: network backend unknown (%s)" backend in
 			debug "%s" error;
@@ -401,6 +402,7 @@ module Bridge = struct
 			match !kind with
 			| Openvswitch -> Ovs.get_bond_links_up name
 			| Bridge -> Proc.get_bond_links_up name
+			| Contrailvrouter ->  raise Not_implemented
 		) ()
 
 	let get_all _ dbg () =
@@ -408,6 +410,7 @@ module Bridge = struct
 			match !kind with
 			| Openvswitch -> Ovs.list_bridges ()
 			| Bridge -> Sysfs.get_all_bridges ()
+			| Contrailvrouter ->  raise Not_implemented
 		) ()
 
 	let create _ dbg ?vlan ?mac ?(other_config=[]) ~name () =
@@ -460,6 +463,15 @@ module Bridge = struct
 				in
 				ignore (Ovs.create_bridge ?mac ~fail_mode ?external_id ?disable_in_band
 					vlan vlan_bug_workaround name)
+                        | Contrailvrouter ->
+				let external_id =
+					if List.mem_assoc "network-uuids" other_config then
+						Some ("xs-network-uuids", List.assoc "network-uuids" other_config)
+					else
+						None
+				in
+				ignore (ContrailVR.create_bridge ?mac ?external_id name)
+
 			| Bridge ->
 				ignore (Brctl.create_bridge name);
 				Opt.iter (Ip.set_mac name) mac;
@@ -493,6 +505,9 @@ module Bridge = struct
 					ignore (Ovs.destroy_bridge name)
 				end else
 					debug "Not destroying bridge %s, because it has VLANs on top" name
+			| Contrailvrouter ->
+				ignore (ContrailVR.destroy_bridge name)
+	
 			| Bridge ->
 				let ifs = Sysfs.bridge_to_interfaces name in
 				let vlans_on_this_parent =
@@ -531,6 +546,7 @@ module Bridge = struct
 			match !kind with
 			| Openvswitch -> Ovs.bridge_to_ports name
 			| Bridge -> raise Not_implemented
+			| Contrailvrouter -> raise Not_implemented
 		) ()
 
 	let get_all_ports _ dbg ?(from_cache=false) () =
@@ -542,6 +558,7 @@ module Bridge = struct
 				match !kind with
 				| Openvswitch -> List.concat (List.map Ovs.bridge_to_ports (Ovs.list_bridges ()))
 				| Bridge -> raise Not_implemented
+				| Contrailvrouter -> raise Not_implemented
 		) ()
 
 	let get_bonds _ dbg ~name =
@@ -549,6 +566,7 @@ module Bridge = struct
 			match !kind with
 			| Openvswitch -> Ovs.bridge_to_ports name
 			| Bridge -> raise Not_implemented
+			| Contrailvrouter -> raise Not_implemented
 		) ()
 
 	let get_all_bonds _ dbg ?(from_cache=false) () =
@@ -561,6 +579,7 @@ module Bridge = struct
 				match !kind with
 				| Openvswitch -> List.concat (List.map Ovs.bridge_to_ports (Ovs.list_bridges ()))
 				| Bridge -> raise Not_implemented
+				| Contrailvrouter -> raise Not_implemented
 		) ()
 
 	let get_vlan _ dbg ~name =
@@ -568,6 +587,7 @@ module Bridge = struct
 			match !kind with
 			| Openvswitch -> Ovs.bridge_to_vlan name
 			| Bridge -> raise Not_implemented
+			| Contrailvrouter -> raise Not_implemented
 		) ()
 
 	let add_default_flows _ dbg bridge mac interfaces =
@@ -575,6 +595,7 @@ module Bridge = struct
 			match !kind with
 			| Openvswitch -> Ovs.add_default_flows bridge mac interfaces
 			| Bridge -> ()
+			| Contrailvrouter -> ()
 		) ()
 
 	let add_port _ dbg ?bond_mac ~bridge ~name ~interfaces ?(bond_properties=[]) () =
@@ -615,6 +636,11 @@ module Bridge = struct
 						warn "Could not add default flows for port %s on bridge %s because no MAC address was specified"
 							name bridge
 				end
+                        | Contrailvrouter ->
+				if List.length interfaces = 1 then begin
+					List.iter (fun name -> Interface.bring_up () dbg ~name) interfaces;
+					ignore (ContrailVR.create_port (List.hd interfaces) bridge)
+				end 
 			| Bridge ->
 				if List.length interfaces = 1 then begin
 					List.iter (fun name -> Interface.bring_up () dbg ~name) interfaces;
@@ -653,6 +679,9 @@ module Bridge = struct
 				ignore (Ovs.destroy_port name)
 			| Bridge ->
 				ignore (Brctl.destroy_port bridge name)
+                        | Contrailvrouter ->
+				ignore (ContrailVR.destroy_port bridge name)
+
 		) ()
 
 	let get_interfaces _ dbg ~name =
@@ -662,6 +691,9 @@ module Bridge = struct
 				Ovs.bridge_to_interfaces name
 			| Bridge ->
 				Sysfs.bridge_to_interfaces name
+                	| Contrailvrouter ->
+				ContrailVR.bridge_to_interfaces name
+
 		) ()
 
 	let get_fail_mode _ dbg ~name =
@@ -674,6 +706,7 @@ module Bridge = struct
 				| _ -> None
 				end
 			| Bridge -> raise Not_implemented
+			| Contrailvrouter -> raise Not_implemented
 		) ()
 
 	let is_persistent _ dbg ~name =
